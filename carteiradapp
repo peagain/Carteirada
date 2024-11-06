@@ -1,0 +1,95 @@
+# Instalar bibliotecas necessárias
+!pip install yfinance streamlit numpy pandas scipy matplotlib seaborn
+
+# Importar bibliotecas
+import yfinance as yf
+import streamlit as st
+import pandas as pd
+import numpy as np
+from scipy.optimize import minimize
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Configuração inicial do app
+st.title("Análise e Montagem de Carteira de Investimentos para Ações da B3")
+st.sidebar.header("Configurações do Investidor")
+
+# Lista de empresas da B3 para a análise (exemplos; use o ticker correto para cada ação da B3)
+empresas_b3 = {
+    'Vale': 'VALE3.SA', 'Petrobras': 'PETR4.SA', 'Itaú': 'ITUB4.SA', 
+    'Bradesco': 'BBDC4.SA', 'Ambev': 'ABEV3.SA', 'Magazine Luiza': 'MGLU3.SA'
+}
+
+# Seleção do perfil de risco
+perfil = st.sidebar.selectbox("Selecione o perfil do investidor", 
+                              ["Conservador", "Moderado", "Agressivo"])
+
+# Obter dados históricos das ações da B3
+dados_empresas = {}
+for nome, ticker in empresas_b3.items():
+    dados_empresas[nome] = yf.Ticker(ticker).history(period="2y")['Close']
+
+# Consolidar dados de fechamento em um DataFrame
+df_precos = pd.DataFrame(dados_empresas)
+
+# Cálculo de retorno e risco
+retornos_diarios = df_precos.pct_change().dropna()
+retorno_medio_anualizado = retornos_diarios.mean() * 252
+volatilidade_anualizada = retornos_diarios.std() * np.sqrt(252)
+cov_matrix = retornos_diarios.cov() * 252
+
+# Função de otimização da carteira com base no perfil do investidor
+def otimizar_carteira(perfil):
+    num_ativos = len(empresas_b3)
+    pesos_iniciais = np.ones(num_ativos) / num_ativos
+    
+    # Função objetivo (para maximizar o índice Sharpe)
+    def objetivo(pesos):
+        retorno_portfolio = np.sum(pesos * retorno_medio_anualizado)
+        risco_portfolio = np.sqrt(np.dot(pesos.T, np.dot(cov_matrix, pesos)))
+        sharpe_ratio = retorno_portfolio / risco_portfolio
+        return -sharpe_ratio  # Minimizar o inverso para maximizar Sharpe
+    
+    # Restrições e limites baseados no perfil
+    limites = [(0.01, 0.10) if perfil == "Conservador" else (0.05, 0.20) if perfil == "Moderado" else (0.05, 0.30) for _ in range(num_ativos)]
+    restricoes = {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
+    
+    # Otimização
+    resultado = minimize(objetivo, pesos_iniciais, bounds=limites, constraints=restricoes)
+    return resultado.x if resultado.success else pesos_iniciais
+
+# Obter os pesos ideais da carteira
+pesos_otimizados = otimizar_carteira(perfil)
+df_carteira = pd.DataFrame({'Ativo': list(empresas_b3.keys()), 'Peso': pesos_otimizados})
+df_carteira['Peso (%)'] = df_carteira['Peso'] * 100
+
+# Exibir a carteira no dashboard
+st.subheader("Carteira Otimizada")
+st.dataframe(df_carteira[['Ativo', 'Peso (%)']])
+
+# Justificativa para cada ativo com base nos indicadores
+st.subheader("Justificativas para Inclusão de Cada Ativo")
+for ativo, peso in zip(empresas_b3.keys(), pesos_otimizados):
+    info_ativo = yf.Ticker(empresas_b3[ativo]).info
+    st.write(f"**{ativo}**")
+    st.write(f"- **P/L**: {info_ativo.get('trailingPE', 'N/A')}")
+    st.write(f"- **Dividend Yield**: {info_ativo.get('dividendYield', 'N/A')}")
+    st.write(f"- **Volatilidade Anualizada**: {volatilidade_anualizada[ativo]:.2%}")
+    st.write(f"- **Peso na Carteira**: {peso * 100:.2f}%")
+    st.write("---")
+
+# Dashboard da Carteira: Gráficos de Desempenho
+st.subheader("Gráfico de Desempenho da Carteira")
+
+# Cálculo do retorno cumulativo da carteira
+retorno_diario_carteira = (retornos_diarios * pesos_otimizados).sum(axis=1)
+retorno_cumulativo_carteira = (1 + retorno_diario_carteira).cumprod()
+
+# Gráfico de retorno cumulativo
+plt.figure(figsize=(10, 6))
+plt.plot(retorno_cumulativo_carteira, label="Carteira Otimizada")
+plt.title("Retorno Cumulativo da Carteira")
+plt.xlabel("Data")
+plt.ylabel("Retorno Cumulativo")
+plt.legend()
+st.pyplot(plt.gcf())
